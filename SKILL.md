@@ -112,53 +112,254 @@ memory_file = f"~/.hermes/memory/daily/{today}.md"
 
 检查用户提到的"XX"是否在以下位置有相关上下文：
 
-1. **知识库**：使用 `kb_search.py` 搜索关键词
-2. **历史会话**：使用 `session_search` 搜索相关对话
-3. **当日记忆**：检查 `~/.hermes/memory/daily/` 中是否有相关记录
+1. **记忆关键词索引**（新增）：使用 `context_switch.py confirm <keyword>` 检索过去90天的相关记忆
+2. **知识库**：使用 `kb_search.py` 搜索关键词
+3. **历史会话**：使用 `session_search` 搜索相关对话
+4. **当日记忆**：检查 `~/.hermes/memory/daily/` 中是否有相关记录
 
-如果有，简要总结并展示给用户：
+如果有，**通过索引检索并让用户确认**：
 
 ```
-📋 找到相关上下文：
-- {历史会话摘要}
-- {知识库条目}
+🔍 找到 X 条与"XX"相关的历史记忆：
 
-是否参考这些继续，还是从零开始？
+[1] 2026-07-28 17:20 - 桨板6km训练计划
+    预览：用户需要为老婆制定桨板6km训练计划...
+
+[2] 2026-07-29 09:15 - 桨板饮食调整
+    预览：根据7/28训练结果调整饮食方案...
+
+💡 请回复数字编号（如"1"或"1,2"）选择要加载的记忆，
+   或回复"全部"加载所有，或回复"取消"放弃。
 ```
+
+用户选择后，加载完整上下文并展示：
+
+```
+📋 已加载 1 条历史记忆：
+
+============================================================
+📅 2026-07-28 17:20 | 桨板6km训练计划
+============================================================
+## 会话快照 - 17:20
+
+**话题**：桨板6km训练计划HTML生成与部署
+**状态**：部署中
+
+### 背景
+用户需要为老婆制定桨板6km训练计划，包含饮食建议...
+
+[完整快照内容...]
+```
+
+**注意**：只有当检索到相关记忆时才展示确认界面，否则直接进入阶段5。
 
 ### 阶段5：执行切换
 
 1. 确认存储成功
-2. 开始新任务，引用相关上下文（如有）
+2. 开始新任务，引用已确认的上下文
 3. 更新当前会话的"活跃话题"标记
 
-## 存储规范
+## 记忆索引系统
 
-### 目录结构
+### 索引结构
 
+记忆索引位于：`~/.hermes/memory/index/keyword_index.json`
+
+索引内容：从每个会话快照中提取关键词，建立倒排索引
+
+```json
+{
+  "桨板训练": [
+    {
+      "date": "2026-07-28",
+      "time": "17:20",
+      "topic": "桨板6km训练计划HTML生成与部署",
+      "file": "2026-07-28.md"
+    }
+  ],
+  "饮食": [
+    {
+      "date": "2026-07-28",
+      "time": "17:20",
+      "topic": "桨板6km训练计划HTML生成与部署",
+      "file": "2026-07-28.md"
+    },
+    {
+      "date": "2026-07-29",
+      "time": "09:15",
+      "topic": "桨板饮食调整",
+      "file": "2026-07-29.md"
+    }
+  ]
+}
 ```
-~/.hermes/memory/
-├── daily/                    # 当日临时记忆（可清理）
-│   ├── 2026-07-28.md
-│   ├── 2026-07-29.md
-│   └── ...
-└── persistent/               # 长期记忆（重要事实）
-    ├── user-preferences.md
-    └── environment.md
+
+### 索引维护
+
+#### 自动增量更新
+
+每次保存上下文快照时，自动提取关键词并更新索引：
+
+```bash
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py save \
+  "话题标题" \
+  --status "状态" \
+  --bg "背景" \
+  --exec "执行情况" \
+  --decisions "决策1|决策2" \
+  --todos "待办1|待办2" \
+  --refs "文件:path,链接:url"
 ```
+
+#### 手动重建索引
+
+如需重建完整索引（扫描过去90天）：
+
+```bash
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py rebuild [days]
+```
+
+#### 查看索引统计
+
+```bash
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py stats
+```
+
+输出示例：
+```json
+{
+  "status": "正常",
+  "total_keywords": 156,
+  "total_entries": 89,
+  "covered_files": 15,
+  "date_range": {
+    "earliest": "2026-07-15",
+    "latest": "2026-07-30"
+  }
+}
+```
+
+### 检索流程
+
+#### 1. 确认检索（推荐）
+
+```bash
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py confirm "桨板" --days 90
+```
+
+输出：
+```
+🔍 找到 2 条与"桨板"相关的历史记忆：
+
+[1] 2026-07-28 17:20 - 桨板6km训练计划HTML生成与部署
+    预览：用户需要为老婆制定桨板6km训练计划...
+
+[2] 2026-07-29 09:15 - 桨板饮食调整
+    预览：根据7/28训练结果调整饮食方案...
+
+💡 请回复数字编号（如"1"或"1,2"）选择要加载的记忆...
+```
+
+#### 2. 加载完整上下文
+
+用户选择后（如回复"1"）：
+
+```bash
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py load "桨板" --selection "1" --days 90
+```
+
+输出：
+```
+📋 已加载 1 条历史记忆：
+
+============================================================
+📅 2026-07-28 17:20 | 桨板6km训练计划
+============================================================
+## 会话快照 - 17:20
+...
+```
+
+### 关键词提取策略
+
+索引系统自动从以下字段提取关键词：
+
+1. **话题标题**：主要关键词
+2. **背景说明**：场景关键词
+3. **执行情况**：技术关键词
+4. **用户决策**：选择关键词
+5. **待办事项**：任务关键词
+6. **关键引用**：文件/链接关键词
+
+提取规则：
+- **中文**：提取2-4字词组，过滤停用词
+- **英文**：提取3字母以上单词，转小写，过滤停用词
+- **数字**：保留数字串（如日期、版本号）
+- **去重**：同一快照的关键词自动去重
 
 ### 清理策略
 
 - **daily/** 中的文件超过 7 天自动清理（可通过 cronjob 实现）
-- **persistent/** 中的文件长期保留，需手动管理
+- **index/** 中的索引文件与 daily/ 同步清理
+- 清理前自动重建索引，确保剩余记忆可检索
 
-### 压缩原则
+### 快速命令
 
-- **保留核心**：只存对后续有用的信息
-- **删除冗余**：不存中间过程、错误堆栈、无意义对话
-- **结构化**：使用固定模板，便于后续检索
+```bash
+# 保存上下文快照（自动更新索引）
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py save \
+  "话题标题" \
+  --status "状态" \
+  --bg "背景" \
+  --exec "执行情况" \
+  --decisions "决策1|决策2" \
+  --todos "待办1|待办2" \
+  --refs "文件:path,链接:url"
 
-## 示例
+# 检索并确认加载（跨会话）
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py confirm "关键词" --days 90
+
+# 根据选择加载完整上下文
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py load "关键词" --selection "1,3" --days 90
+
+# 搜索（仅预览，不确认加载）
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py search "关键词" --days 7
+
+# 重建索引（扫描过去90天）
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py rebuild 90
+
+# 查看索引统计
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py stats
+
+# 读取今日所有快照
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py read
+
+# 清理7天前的临时记忆
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py cleanup 7
+```
+
+## 与记忆系统的集成
+
+本 Skill 与 `memory` 工具配合使用：
+
+- **短期压缩**：使用 `write_file` 写入 `daily/` 目录
+- **长期提取**：重要事实使用 `memory` 工具存入持久化记忆
+- **历史检索**：使用 `session_search` 查找历史会话
+- **跨会话召回**：使用关键词索引检索过去90天的记忆，通过确认机制精准调取
+
+## 错误处理
+
+1. **存储失败**：如果无法写入文件，降级为仅内存压缩，提示用户
+2. **索引损坏**：自动重建索引
+3. **磁盘空间不足**：清理最旧的 daily 文件和索引
+4. **权限问题**：检查 `~/.hermes/memory/` 目录权限
+
+## 注意事项
+
+- **触发准确性**：避免在正常对话中误触发，需确认是真正的任务切换
+- **压缩质量**：不要过度压缩导致丢失关键细节，也不要保留无关信息
+- **隐私保护**：daily 文件包含会话内容，注意权限设置
+- **索引范围**：默认90天，可根据需要调整
+- **确认机制**：检索结果必须经用户确认后再加载，避免误调用无关上下文
 
 ### 示例1：明确切换
 
@@ -261,6 +462,15 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 ```
 
 ## 版本历史
+
+- **v1.1.0** (2026-07-30)
+  - 新增关键词索引检索维度（跨会话记忆召回）
+  - 支持自动增量更新索引（save 时自动提取关键词）
+  - 支持手动重建索引（rebuild，默认90天）
+  - 新增 confirm/load 交互命令（检索确认 -> 精准调取）
+  - 新增 stats 命令查看索引统计
+  - 搜索范围扩展：默认7天，confirm/load 默认90天
+  - 关键词提取策略：中文2-4字词组 + 英文3字母单词 + 停用词过滤
 
 - **v1.0.0** (2025-07-28)
   - 初始版本
