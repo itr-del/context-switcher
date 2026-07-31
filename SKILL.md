@@ -1,14 +1,31 @@
 ---
 name: context-switcher
 description: 任务切换技能。当用户说"清空上下文，现在进行关于XX的任务"或类似表达时，自动压缩当前上下文、存储到当日临时记忆，并读取新任务相关上下文，实现无损耗任务切换。
-version: 1.0.0
+version: 1.2.0
 metadata:
   hermes:
     tags: [context, task-switching, memory, productivity]
     related_skills: [knowledge-base]
+  required_commands:
+    - python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 ---
 
 # 任务切换与上下文管理
+
+## 🚨 强制执行要求（必读）
+
+**加载本 Skill 不等于执行本 Skill。**
+
+本 Skill 的核心执行体是 `scripts/context_switch.py`。`skill_view()` 只加载说明文档，**不会自动执行任何命令**。必须在同一轮内通过 `terminal` 调用以下脚本，否则视为未完成：
+
+| 阶段 | 触发时机 | 必须执行的命令 |
+|------|---------|--------------|
+| 压缩当前上下文 | 用户要求切换/清理上下文时 | `python3 context_switch.py save "话题" --status "..." --bg "..." --exec "..." --decisions "..." --todos "..." --refs "..."` |
+| 检索历史上下文 | 保存完成后 | `python3 context_switch.py confirm "关键词" --days 90` |
+| 加载选中的上下文 | 用户回复选择编号后 | `python3 context_switch.py load "关键词" --selection "1,2" --days 90` |
+| 环境检查 | 执行前（推荐） | `python3 context_switch.py check` |
+
+**禁止仅凭 `skill_view()` 就回答"已处理"或"已完成切换"。** 必须看到脚本输出成功结果才算完成对应阶段。
 
 ## 概述
 
@@ -462,6 +479,12 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 ```
 
 ## 版本历史
+
+- **v1.2.0** (2026-07-31)
+  - 新增 🚨 强制执行要求章节（在 SKILL.md 最顶部）
+  - 明确禁止仅凭 `skill_view()` 就认为 skill 已执行
+  - 增加 `required_commands` metadata，声明核心执行脚本
+  - 新增 `check` 命令（pre-flight 环境检查）
 
 - **v1.1.0** (2026-07-30)
   - 新增关键词索引检索维度（跨会话记忆召回）

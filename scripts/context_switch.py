@@ -439,27 +439,27 @@ def rebuild_index(days: int = 90):
 def list_index_stats() -> dict:
     """
     查看索引统计信息
-    
+
     Returns:
         统计信息：关键词数量、覆盖文件数、日期范围
     """
     ensure_dirs()
-    
+
     if not INDEX_FILE.exists():
         return {"status": "索引不存在，请先执行 rebuild"}
-    
+
     try:
         with open(INDEX_FILE, "r", encoding="utf-8") as f:
             index = json.load(f)
     except (json.JSONDecodeError, IOError):
         return {"status": "索引文件损坏"}
-    
+
     # 统计
     all_dates = set()
     for entries in index.values():
         for entry in entries:
             all_dates.add(entry["date"])
-    
+
     return {
         "status": "正常",
         "total_keywords": len(index),
@@ -472,9 +472,65 @@ def list_index_stats() -> dict:
     }
 
 
+def check_environment() -> str:
+    """
+    Pre-flight 环境检查：验证 context-switcher 依赖的目录、文件、脚本是否正常
+
+    Returns:
+        检查结果摘要
+    """
+    ensure_dirs()
+    results = []
+
+    # 1. 检查 daily/ 目录
+    daily_ok = DAILY_DIR.exists() and DAILY_DIR.is_dir()
+    results.append(("daily/ 目录", "✅ 正常" if daily_ok else "❌ 缺失", "高"))
+
+    # 2. 检查 index/ 目录
+    index_ok = INDEX_DIR.exists() and INDEX_DIR.is_dir()
+    results.append(("index/ 目录", "✅ 正常" if index_ok else "❌ 缺失", "高"))
+
+    # 3. 检查 keyword_index.json
+    index_file_ok = INDEX_FILE.exists()
+    results.append(("keyword_index.json", "✅ 存在" if index_file_ok else "⚠️ 不存在（首次使用请先执行 rebuild）", "高"))
+
+    # 4. 检查索引状态
+    if index_file_ok:
+        try:
+            with open(INDEX_FILE, "r", encoding="utf-8") as f:
+                index = json.load(f)
+            total_keywords = len(index)
+            all_dates = set()
+            for entries in index.values():
+                for entry in entries:
+                    all_dates.add(entry["date"])
+            results.append((f"索引状态 ({total_keywords} 关键词, {len(all_dates)} 天)", "✅ 正常", "高"))
+        except (json.JSONDecodeError, IOError):
+            results.append(("索引状态", "❌ 索引文件损坏，请执行 rebuild", "高"))
+
+    # 5. 检查今日 daily 文件
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_file = DAILY_DIR / f"{today}.md"
+    today_ok = today_file.exists()
+    results.append((f"今日记忆 {today}.md", "✅ 已创建" if today_ok else "⚠️ 今日暂无记录（save 后将自动创建）", "中"))
+
+    # 汇总
+    all_ok = all("✅" in r[1] for r in results)
+    summary = "✅ 环境检查全部通过" if all_ok else "⚠️ 环境检查发现问题（见上方详情）"
+
+    output = f"\n{summary}\n\n"
+    output += "| 检查项 | 状态 | 优先级 |\n"
+    output += "|--------|------|--------|\n"
+    for name, status, priority in results:
+        output += f"| {name} | {status} | {priority} |\n"
+
+    return output
+
+
 def main():
     if len(sys.argv) < 2:
         print("用法：")
+        print("  python context_switch.py check")
         print("  python context_switch.py save <topic> --status <status> --bg <background> ...")
         print("  python context_switch.py read")
         print("  python context_switch.py search <keyword> [--days <days>]")
@@ -484,10 +540,15 @@ def main():
         print("  python context_switch.py stats")
         print("  python context_switch.py cleanup [days]")
         sys.exit(1)
-    
+
     command = sys.argv[1]
-    
-    if command == "save":
+
+    if command == "check":
+        """Pre-flight 环境检查"""
+        result = check_environment()
+        print(result)
+
+    elif command == "save":
         # 解析参数
         topic = sys.argv[2] if len(sys.argv) > 2 else "未命名话题"
         status = "进行中"
