@@ -1,6 +1,10 @@
 ---
 name: context-switcher
-description: 任务切换技能。当用户说"清空上下文，现在进行关于XX的任务"或类似表达时，自动压缩当前上下文、存储到当日临时记忆，并读取新任务相关上下文，实现无损耗任务切换。
+description: |
+  任务切换与上下文压缩工具。当用户说"切换任务/清空上下文/换话题/回到XX"时触发。
+  ⚠️ 强制执行：加载本Skill后，必须在本轮对话中调用 terminal 执行 scripts/context_switch.py。
+  禁止用自然语言模拟执行结果。回复末尾必须粘贴脚本的原始stdout输出。
+  如果未调用脚本或未粘贴输出，视为本Skill执行失败。
 version: 1.2.0
 metadata:
   hermes:
@@ -105,25 +109,25 @@ metadata:
 - 命令：{cmd}
 ```
 
-### 阶段3：存储到当日记忆
+### 阶段3：压缩当前上下文（必须执行，不可跳过）
 
-执行存储：
+**在本轮对话中立即执行以下命令**（禁止用自然语言复述）：
 
-```python
-from hermes_tools import write_file, terminal
-from datetime import datetime
-
-today = datetime.now().strftime("%Y-%m-%d")
-memory_file = f"~/.hermes/memory/daily/{today}.md"
-
-# 读取当日记忆（如果存在）
-# 追加新快照
-# 写入文件
+```bash
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py save \
+"{当前话题标题}" \
+--status "{进行中/已完成/暂停}" \
+--bg "{话题起源，2-3句话}" \
+--exec "{已完成步骤}" \
+--decisions "{决策1|决策2}" \
+--todos "{待办1|待办2}" \
+--refs "{文件:path,链接:url}"
 ```
 
-**文件命名规则**：
-- 当日文件：`YYYY-MM-DD.md`
-- 同一日多次切换：追加多个快照，用时间戳区分
+执行后，必须将终端输出的原始结果完整粘贴到回复中。
+
+❌ 错误示例："已保存当前上下文到 memory 文件"
+✅ 正确示例：粘贴脚本输出的 ✅ 已保存快照到 ~/.hermes/memory/daily/2026-08-03.md 等原始内容
 
 ### 阶段4：读取新任务上下文
 
@@ -443,7 +447,22 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 - **隐私保护**：daily 文件包含会话内容，注意权限设置
 - **清理机制**：定期清理 old daily 文件，避免磁盘占用
 
+## 执行自检清单（Agent 回复前必填）
+
+在提交回复前，逐项确认：
+- [ ] 我是否在 terminal 中调用了 `context_switch.py` 脚本？
+- [ ] 我是否粘贴了脚本的原始 stdout/stderr 输出？
+- [ ] 如果用户要求加载历史记忆，我是否先执行了 `confirm` 并等待用户选择？
+- [ ] 如果以上任一项为否，我的回复无效，必须重新执行。
+
+**记住：写文档不等于执行。只有脚本输出才算数。**
+
 ## 快速命令
+
+## 🚨 执行警告
+
+以下所有命令都**必须通过 terminal 实际运行**，禁止用自然语言描述"我已执行"。
+每次运行后，**必须粘贴原始输出**作为执行证据。
 
 ```bash
 # 手动查看当日记忆
