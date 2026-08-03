@@ -479,27 +479,6 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 3. 用户确认后，压缩存储调试上下文
 4. 开始新任务
 
-## 与记忆系统的集成
-
-本 Skill 与 `memory` 工具配合使用：
-
-- **短期压缩**：使用 `write_file` 写入 `daily/` 目录
-- **长期提取**：重要事实使用 `memory` 工具存入持久化记忆
-- **历史检索**：使用 `session_search` 查找历史会话
-
-## 错误处理
-
-1. **存储失败**：如果无法写入文件，降级为仅内存压缩，提示用户
-2. **磁盘空间不足**：清理最旧的 daily 文件
-3. **权限问题**：检查 `~/.hermes/memory/` 目录权限
-
-## 注意事项
-
-- **触发准确性**：避免在正常对话中误触发，需确认是真正的任务切换
-- **压缩质量**：不要过度压缩导致丢失关键细节，也不要保留无关信息
-- **隐私保护**：daily 文件包含会话内容，注意权限设置
-- **清理机制**：定期清理 old daily 文件，避免磁盘占用
-
 ## 执行自检清单（Agent 回复前必填）
 
 在提交回复前，逐项确认：
@@ -510,8 +489,6 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 - [ ] 如果以上任一项为否，我的回复无效，必须重新执行。
 
 **记住：写文档不等于执行。只有脚本输出才算数。**
-
-## 快速命令
 
 ## 🚨 执行警告
 
@@ -561,6 +538,13 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 ```
 
 ## 版本历史
+
+- **v1.3.1** (2026-08-03)
+  - 🐛 修复 `cleanup` 命令 NameError 崩溃：补上缺失的 `cleanup_old_memory()`（清理过期 daily + 同步索引）
+  - 🐛 修复 `rebuild` 丢弃每天第一个快照：`split("\n## 会话快照 - ")` 改为 `split("## 会话快照 - ")`（首条快照在文件开头无前导换行，原逻辑将其留在 sections[0] 被跳过）
+  - 🐛 修复 `rebuild` 语义解析错乱：决策/待办/引用改为按 `###` 段落分别解析，不再用全局 `^- ` 正则误抓
+  - 🛡️ rotate 防御：未提供 --chat-id 且匹配到多个会话时拒绝标记，避免误伤
+  - 📄 清理 SKILL.md 重复章节（与记忆系统的集成/错误处理/注意事项/空快速命令）
 
 - **v1.3.0** (2026-08-03)
   - 🆕 **方案B落地："清空上下文" = 归档 + 开新会话**

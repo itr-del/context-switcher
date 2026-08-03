@@ -388,29 +388,54 @@ def rebuild_index(days: int = 90):
             continue
         
         # 解析所有快照
-        sections = content.split("\n## 会话快照 - ")
-        for section in sections[1:]:  # 跳过第一个空段
+        # 注意：不能用 split("\n## 会话快照 - ")（带前导换行）——
+        # daily 文件由 save 追加写入，第一个快照在文件开头无前导换行，
+        # 会被留在 sections[0] 而跳过，导致当天第一个快照永久丢失索引。
+        sections = content.split("## 会话快照 - ")
+        for section in sections[1:]:  # sections[0] 为文件头（可能为空）
             lines = section.split("\n", 1)
             if not lines:
                 continue
-            
+
             time_str = lines[0].strip()
-            
-            # 提取快照各字段
+
+            # 提取快照各字段（按 ### 段落分别解析，避免待办/引用误入决策）
             topic_match = re.search(r'\*\*话题\*\*：(.+)', section)
             bg_match = re.search(r'### 背景\n(.+?)(?=\n###|\Z)', section, re.DOTALL)
             exec_match = re.search(r'### 执行情况\n(.+?)(?=\n###|\Z)', section, re.DOTALL)
-            decisions_match = re.findall(r'^- (.+)$', section, re.MULTILINE)
-            
-            # 提取待办和引用（简化处理）
-            todos = []
-            refs = {}
-            decisions = [d.strip() for d in decisions_match] if decisions_match else []
-            
+            decisions_match = re.search(r'### 用户决策\n(.+?)(?=\n###|\Z)', section, re.DOTALL)
+            todos_match = re.search(r'### 待办/遗留\n(.+?)(?=\n###|\Z)', section, re.DOTALL)
+            refs_match = re.search(r'### 关键引用\n(.+?)(?=\n###|\Z)', section, re.DOTALL)
+
             topic = topic_match.group(1).strip() if topic_match else ""
             background = bg_match.group(1).strip() if bg_match else ""
             execution = exec_match.group(1).strip() if exec_match else ""
-            
+
+            # 决策：仅取「用户决策」段落中的 "- xxx" 行
+            decisions = []
+            if decisions_match and decisions_match.group(1):
+                for line in decisions_match.group(1).splitlines():
+                    line = line.strip()
+                    if line:
+                        decisions.append(line.lstrip("- ").strip())
+
+            # 待办：仅取「待办/遗留」段落
+            todos = []
+            if todos_match and todos_match.group(1):
+                for line in todos_match.group(1).splitlines():
+                    line = line.strip()
+                    if line:
+                        todos.append(line.lstrip("- ").strip())
+
+            # 引用：仅取「关键引用」段落，解析 "key：value"
+            refs = {}
+            if refs_match and refs_match.group(1):
+                for line in refs_match.group(1).splitlines():
+                    line = line.strip()
+                    m = re.match(r'^- (.+?)：(.+)$', line)
+                    if m:
+                        refs[m.group(1).strip()] = m.group(2).strip()
+
             # 提取关键词
             all_text = f"{topic} {background} {execution} {' '.join(decisions)} {' '.join(todos)} {' '.join(refs.values())}"
             keywords = extract_keywords(all_text)
@@ -434,6 +459,52 @@ def rebuild_index(days: int = 90):
         json.dump(index, f, ensure_ascii=False, indent=2)
     
     return f"✅ 索引已重建，共索引 {len(index)} 个关键词，覆盖 {days} 天记忆。"
+
+
+def cleanup_old_memory(days: int = 7) -> None:
+    """
+    清理 N 天前的临时记忆文件，并同步清理索引中的对应条目。
+
+    Args:
+        days: 保留天数（默认7天）
+    """
+    ensure_dirs()
+    cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    removed = 0
+
+    # 清理过期 daily 文件
+    for filepath in DAILY_DIR.glob("*.md"):
+        date_str = filepath.name.replace(".md", "")
+        if date_str < cutoff_date:
+            try:
+                filepath.unlink()
+                removed += 1
+            except IOError as e:
+                print(f"⚠️ 删除失败：{filepath} ({e})")
+
+    # 同步清理索引中的过期条目
+    if removed and INDEX_FILE.exists():
+        try:
+            with open(INDEX_FILE, "r", encoding="utf-8") as f:
+                index = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            index = {}
+
+        changed = False
+        for keyword in list(index.keys()):
+            entries = [e for e in index[keyword] if e.get("date", "") >= cutoff_date]
+            if len(entries) != len(index[keyword]):
+                changed = True
+            if entries:
+                index[keyword] = entries
+            else:
+                del index[keyword]
+
+        if changed:
+            with open(INDEX_FILE, "w", encoding="utf-8") as f:
+                json.dump(index, f, ensure_ascii=False, indent=2)
+
+    print(f"🧹 已清理 {removed} 个过期记忆文件（早于 {cutoff_date}），索引已同步。")
 
 
 def list_index_stats() -> dict:
@@ -531,6 +602,14 @@ def mark_session_suspended() -> str:
         if user_id and origin.get("user_id") != user_id:
             continue
         matched.append((key, entry))
+
+    # 防御：未提供 chat_id 时若匹配到多个会话，拒绝标记（避免误伤其他会话）
+    if len(matched) > 1 and not chat_id:
+        names = [k.split(":")[-1] or k for k, _ in matched]
+        return (
+            f"⚠️ 未提供 --chat-id，但匹配到 {len(matched)} 个会话：{', '.join(names)}。\n"
+            "   为避免误伤，请显式指定 --chat-id <会话ID> 后重试。归档已完成，请手动发送 /new。"
+        )
 
     if not matched:
         return (
