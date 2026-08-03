@@ -1,11 +1,12 @@
 ---
 name: context-switcher
 description: |
-  任务切换与上下文压缩工具。当用户说"切换任务/清空上下文/换话题/回到XX"时触发。
+  任务切换与上下文管理工具。当用户说"切换任务/清空上下文/换话题/回到XX"时触发。
   ⚠️ 强制执行：加载本Skill后，必须在本轮对话中调用 terminal 执行 scripts/context_switch.py。
   禁止用自然语言模拟执行结果。回复末尾必须粘贴脚本的原始stdout输出。
   如果未调用脚本或未粘贴输出，视为本Skill执行失败。
-version: 1.2.0
+  🆕 v1.3.0："清空上下文"= 归档快照 + 开新会话（rotate）。不再只归档不截断。
+version: 1.3.0
 metadata:
   hermes:
     tags: [context, task-switching, memory, productivity]
@@ -25,6 +26,7 @@ metadata:
 | 阶段 | 触发时机 | 必须执行的命令 |
 |------|---------|--------------|
 | 压缩当前上下文 | 用户要求切换/清理上下文时 | `python3 context_switch.py save "话题" --status "..." --bg "..." --exec "..." --decisions "..." --todos "..." --refs "..."` |
+| **开新会话（v1.3.0）** | **save 完成后** | **`python3 context_switch.py rotate "话题" ...`（归档+标记会话待重置），然后引导用户发送 `/new`** |
 | 检索历史上下文 | 保存完成后 | `python3 context_switch.py confirm "关键词" --days 90` |
 | 加载选中的上下文 | 用户回复选择编号后 | `python3 context_switch.py load "关键词" --selection "1,2" --days 90` |
 | 环境检查 | 执行前（推荐） | `python3 context_switch.py check` |
@@ -33,12 +35,22 @@ metadata:
 
 ## 概述
 
-本 Skill 实现**任务切换时的上下文无损压缩与恢复**。当用户要求切换任务时，Agent 会自动完成两件事：
+本 Skill 实现**任务切换时的上下文归档与恢复**。当用户要求切换任务时，Agent 会自动完成两件事：
 
-1. **压缩存储**：从当前对话中抽取核心关键要素，存储到当日临时记忆文件
-2. **上下文恢复**：快速读取用户提到的新任务相关上下文，为新任务提供背景
+1. **归档存储**：从当前对话中抽取核心关键要素，存储到当日临时记忆文件
+2. **开新会话（v1.3.0）**：归档后标记当前会话待重置，并引导用户发送 `/new` 开启全新会话——**旧消息流彻底离开上下文窗口，不再重放**
+3. **上下文恢复**：快速读取用户提到的新任务相关上下文，为新任务提供背景
 
-**核心价值**：避免长会话中的上下文浪费，保持任务切换的连续性。
+**核心价值**：避免长会话中的上下文浪费与旧消息残留混入（如 2026-08-03 jobhunt 事件：旧消息被"假清空"后重放进新窗口并改写时间戳）。
+
+## 为什么必须"归档 + 开新会话"（v1.3.0 背景）
+
+v1.2.0 及之前的"清空上下文"只做归档（save 写文件），**不物理截断模型上下文窗口**。
+后果：旧消息仍留在窗口里，会话续接时被整体重放并盖上新时间戳，
+导致"用户没发过的消息"出现在新会话首条（2026-08-03 jobhunt-copilot 链接即为 2026-07-18 旧消息重放）。
+
+**v1.3.0 起："清空上下文" = save（归档）+ rotate（标记待重置）+ 用户发送 /new（开新会话）。**
+只有新窗口才能保证旧消息物理离开模型视野。
 
 ## 触发条件
 
@@ -129,6 +141,35 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 ❌ 错误示例："已保存当前上下文到 memory 文件"
 ✅ 正确示例：粘贴脚本输出的 ✅ 已保存快照到 ~/.hermes/memory/daily/2026-08-03.md 等原始内容
 
+### 阶段3.5：开新会话（v1.3.0 新增，必须执行，不可跳过）
+
+**归档后立即执行 rotate，标记当前会话待重置：**
+
+```bash
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py rotate \
+"{当前话题标题}" \
+--status "已归档" \
+--bg "{话题起源，2-3句话}" \
+--exec "{已完成步骤}" \
+--decisions "{决策1|决策2}" \
+--todos "{待办1|待办2}" \
+--refs "{文件:path,链接:url}"
+```
+
+`rotate` = save（归档）+ 标记当前会话 suspended=true（写入 sessions.json）。
+
+**然后必须在回复中引导用户发送 `/new` 开启全新会话：**
+
+```
+✅ 上下文已归档。旧会话已标记为待重置。
+请发送 /new 开启全新会话（旧消息不会带入新窗口）。
+```
+
+为什么必须引导 /new：
+- `/new` 是 Hermes 官方命令（gateway `_handle_reset_command`），会创建全新 session_id、清空 transcript、刷新 agent 缓存——**旧消息物理消失**
+- rotate 标记的 suspended=true 是双保险：即使 /new 未发，下次 gateway 重启后该会话也会自动 reset
+- 单靠 save（v1.2.0 做法）无法截断窗口，旧消息会在下次会话续接时重放（2026-08-03 jobhunt 事件根因）
+
 ### 阶段4：读取新任务上下文
 
 检查用户提到的"XX"是否在以下位置有相关上下文：
@@ -176,9 +217,10 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 
 ### 阶段5：执行切换
 
-1. 确认存储成功
-2. 开始新任务，引用已确认的上下文
-3. 更新当前会话的"活跃话题"标记
+1. 确认存储成功（save 输出）
+2. **执行 rotate 并引导用户发送 `/new` 开新会话（v1.3.0，必须）**
+3. 新会话开始后，若用户需要，引用已确认的历史上下文（confirm/load）
+4. 更新当前会话的"活跃话题"标记
 
 ## 记忆索引系统
 
@@ -336,6 +378,16 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
   --todos "待办1|待办2" \
   --refs "文件:path,链接:url"
 
+# 【v1.3.0】归档 + 标记会话待重置（配合 /new 开新会话）
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py rotate \
+  "话题标题" \
+  --status "已归档" \
+  --bg "背景" \
+  --exec "执行情况" \
+  --decisions "决策1|决策2" \
+  --todos "待办1|待办2" \
+  --refs "文件:path,链接:url"
+
 # 检索并确认加载（跨会话）
 python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py confirm "关键词" --days 90
 
@@ -411,10 +463,11 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
    - 开放云服务商安全组8899端口
    ```
 3. 存储到 `~/.hermes/memory/daily/2026-07-28.md`
-4. 搜索"珍珠行业分析"相关上下文：
+4. **执行 rotate，标记会话待重置，并引导用户发送 `/new` 开新会话（v1.3.0 必须）**
+5. 新会话中搜索"珍珠行业分析"相关上下文：
    - 知识库中已有"珍珠行业全景分析.html"
    - 历史会话中讨论过配图问题
-5. 展示给用户，开始新任务
+6. 展示给用户，开始新任务
 
 ### 示例2：隐式切换
 
@@ -452,6 +505,7 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 在提交回复前，逐项确认：
 - [ ] 我是否在 terminal 中调用了 `context_switch.py` 脚本？
 - [ ] 我是否粘贴了脚本的原始 stdout/stderr 输出？
+- [ ] 我是否执行了 `rotate` 并引导用户发送 `/new` 开新会话？（v1.3.0 必须）
 - [ ] 如果用户要求加载历史记忆，我是否先执行了 `confirm` 并等待用户选择？
 - [ ] 如果以上任一项为否，我的回复无效，必须重新执行。
 
@@ -487,6 +541,15 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
   --todos "开放云服务商安全组8899端口" \
   --refs "文件:/home/ubuntu/.hermes/output/桨板6km训练计划_饮食版.html,端口:8899"
 
+# 【v1.3.0】归档 + 标记会话待重置（清空上下文的完整动作）
+python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py rotate \
+  "桨板训练计划部署" \
+  --status "已归档" \
+  --bg "用户需要为老婆制定桨板6km训练计划..." \
+  --exec "HTML已生成；已部署到8899端口" \
+  --decisions "选择部署到服务器|开新端口8899" \
+  --todos "开放云服务商安全组8899端口"
+
 # 读取今日所有快照
 python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py read
 
@@ -498,6 +561,13 @@ python3 ~/.hermes/skills/productivity/context-switcher/scripts/context_switch.py
 ```
 
 ## 版本历史
+
+- **v1.3.0** (2026-08-03)
+  - 🆕 **方案B落地："清空上下文" = 归档 + 开新会话**
+  - 新增 `rotate` 命令：save（归档快照）+ 标记当前会话 suspended=true（写入 sessions.json）
+  - 新增阶段3.5：rotate 后必须引导用户发送 `/new`（Hermes 官方 reset 命令，旧消息物理清除）
+  - 修复 v1.2.0 的"假清空"缺陷：仅归档不截断导致旧消息在会话续接时重放（2026-08-03 jobhunt 事件根因）
+  - 背景：2026-08-03 排查确认 jobhunt-copilot 链接系 2026-07-18 旧消息，经假清空+重放进入 15:51 新窗口
 
 - **v1.2.0** (2026-07-31)
   - 新增 🚨 强制执行要求章节（在 SKILL.md 最顶部）

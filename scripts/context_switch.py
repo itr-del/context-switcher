@@ -472,6 +472,103 @@ def list_index_stats() -> dict:
     }
 
 
+def mark_session_suspended() -> str:
+    """
+    将当前会话标记为 suspended（方案B：归档后开新会话）。
+
+    原理：Hermes gateway 在加载 sessions.json 时若发现条目 suspended=true，
+    下次该会话收到消息时会 auto-reset（创建全新 session_id，旧消息不重放）。
+
+    定位方式：优先使用 Hermes 注入的环境变量（HERMES_SESSION_*），
+    匹配 sessions.json 中 origin.chat_id / platform / user_id。
+
+    Returns:
+        标记结果说明
+    """
+    sessions_file = Path.home() / ".hermes" / "sessions" / "sessions.json"
+    if not sessions_file.exists():
+        return "⚠️ 未找到 sessions.json，无法标记会话（归档已完成，请手动发送 /new 开新会话）"
+
+    # 收集当前会话特征（agent 通过 terminal 运行时 Hermes 会注入这些环境变量）
+    chat_id = os.environ.get("HERMES_SESSION_CHAT_ID", "").strip()
+    platform = os.environ.get("HERMES_SESSION_PLATFORM", "").strip()
+    user_id = os.environ.get("HERMES_SESSION_USER_ID", "").strip()
+    thread_id = os.environ.get("HERMES_SESSION_THREAD_ID", "").strip()
+
+    # 也接受命令行显式指定（--chat-id / --platform / --user-id）
+    argv = sys.argv
+    for flag, target in (("--chat-id", "chat_id"), ("--platform", "platform"), ("--user-id", "user_id")):
+        if flag in argv:
+            idx = argv.index(flag)
+            if idx + 1 < len(argv):
+                if target == "chat_id":
+                    chat_id = argv[idx + 1].strip()
+                elif target == "platform":
+                    platform = argv[idx + 1].strip()
+                elif target == "user_id":
+                    user_id = argv[idx + 1].strip()
+
+    if not chat_id and not platform and not user_id:
+        return (
+            "⚠️ 无法定位当前会话（环境变量和命令行参数都为空）。\n"
+            "   请通过 terminal 运行本脚本（Hermes 会自动注入 HERMES_SESSION_* 环境变量），\n"
+            "   或显式指定 --chat-id。归档已完成，请手动发送 /new 开新会话。"
+        )
+
+    try:
+        with open(sessions_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        return f"⚠️ 读取 sessions.json 失败：{e}（归档已完成，请手动发送 /new）"
+
+    matched = []
+    for key, entry in data.items():
+        origin = entry.get("origin", {}) or {}
+        if chat_id and origin.get("chat_id") != chat_id:
+            continue
+        if platform and origin.get("platform") != platform:
+            continue
+        if user_id and origin.get("user_id") != user_id:
+            continue
+        matched.append((key, entry))
+
+    if not matched:
+        return (
+            f"⚠️ 未找到匹配的会话条目（chat_id={chat_id or '?'}, platform={platform or '?'}）。\n"
+            "   归档已完成，请手动发送 /new 开新会话。"
+        )
+
+    # 备份原文件（首次标记时）
+    backup = sessions_file.with_name("sessions.json.bak-rotate")
+    if not backup.exists():
+        try:
+            import shutil
+            shutil.copy2(sessions_file, backup)
+        except IOError:
+            pass
+
+    names = []
+    for key, entry in matched:
+        if not entry.get("suspended"):
+            entry["suspended"] = True
+        entry["auto_reset_reason"] = "context_switch_rotate"
+        # 记录触发时间，便于排查
+        entry["rotate_marked_at"] = datetime.now().isoformat(timespec="seconds")
+        names.append(key.split(":")[-1] or key)
+
+    try:
+        with open(sessions_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except IOError as e:
+        return f"⚠️ 写入 sessions.json 失败：{e}（归档已完成，请手动发送 /new）"
+
+    return (
+        f"✅ 已标记 {len(matched)} 个会话为待重置（suspended=true）：{', '.join(names)}\n"
+        f"   ▶ 立即生效：请发送 /new 开新会话（官方路径，旧消息不再重放）\n"
+        f"   ▶ 自动生效：下次 gateway 重启后加载此标记，该会话自动开新窗口"
+    )
+
+
 def check_environment() -> str:
     """
     Pre-flight 环境检查：验证 context-switcher 依赖的目录、文件、脚本是否正常
@@ -532,6 +629,8 @@ def main():
         print("用法：")
         print("  python context_switch.py check")
         print("  python context_switch.py save <topic> --status <status> --bg <background> ...")
+        print("  python context_switch.py rotate <topic> [--status <status>] [--bg ...] [--chat-id <id>]")
+        print("      （方案B：归档 + 标记会话待重置，配合 /new 开新会话）")
         print("  python context_switch.py read")
         print("  python context_switch.py search <keyword> [--days <days>]")
         print("  python context_switch.py confirm <keyword> [--days <days>]")
@@ -543,7 +642,57 @@ def main():
 
     command = sys.argv[1]
 
-    if command == "check":
+    if command == "rotate":
+        """方案B：归档当前上下文 + 标记会话待重置（开新会话）"""
+        # 先执行 save（归档快照 + 更新索引）
+        topic = sys.argv[2] if len(sys.argv) > 2 else "未命名话题"
+        status = "已归档"
+        background = ""
+        execution = ""
+        decisions = []
+        todos = []
+        references = {}
+
+        i = 3
+        while i < len(sys.argv):
+            if sys.argv[i] == "--status" and i + 1 < len(sys.argv):
+                status = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == "--bg" and i + 1 < len(sys.argv):
+                background = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == "--exec" and i + 1 < len(sys.argv):
+                execution = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == "--decisions" and i + 1 < len(sys.argv):
+                decisions = sys.argv[i + 1].split("|")
+                i += 2
+            elif sys.argv[i] == "--todos" and i + 1 < len(sys.argv):
+                todos = sys.argv[i + 1].split("|")
+                i += 2
+            elif sys.argv[i] == "--refs" and i + 1 < len(sys.argv):
+                for pair in sys.argv[i + 1].split(","):
+                    if ":" in pair:
+                        k, v = pair.split(":", 1)
+                        references[k.strip()] = v.strip()
+                i += 2
+            else:
+                i += 1
+
+        filepath = save_context_snapshot(
+            topic=topic,
+            status=status,
+            background=background,
+            execution=execution,
+            decisions=decisions,
+            todos=todos,
+            references=references,
+        )
+        print(f"✅ 上下文已归档到：{filepath}")
+        print()
+        print(mark_session_suspended())
+
+    elif command == "check":
         """Pre-flight 环境检查"""
         result = check_environment()
         print(result)
